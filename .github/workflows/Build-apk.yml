@@ -59,6 +59,19 @@ jobs:
           NDK_DIR="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-$(ls -d /usr/local/lib/android/sdk/ndk/* | sort -V | tail -n 1)}}"
           TOOLCHAIN="$NDK_DIR/build/cmake/android.toolchain.cmake"
 
+          python3 - << 'PY'
+          for path in ["redalert/CMakeLists.txt", "tiberiandawn/CMakeLists.txt"]:
+              try:
+                  with open(path, "r") as f:
+                      txt = f.read()
+                  txt = txt.replace("add_executable(vanillara", "add_library(vanillara SHARED")
+                  txt = txt.replace("add_executable(vanillatd", "add_library(vanillatd SHARED")
+                  with open(path, "w") as f:
+                      f.write(txt)
+              except FileNotFoundError:
+                  pass
+          PY
+
           cmake -S . -B build-android \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
@@ -66,7 +79,13 @@ jobs:
             -DANDROID_PLATFORM=android-24 \
             -DANDROID_STL=c++_static \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH \
+            -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
+            -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH \
             -DCMAKE_PREFIX_PATH=/tmp/android-deps \
+            -DSDL2_INCLUDE_DIR=/tmp/android-deps/include/SDL2 \
+            -DSDL2_LIBRARY=/tmp/android-deps/lib/libSDL2.so \
+            -DSDL2_SDLMAIN_LIBRARY="-Wl,--whole-archive;/tmp/android-deps/lib/libSDL2main.a;-Wl,--no-whole-archive" \
             -DOPENAL_INCLUDE_DIR=/tmp/android-deps/include/AL \
             -DOPENAL_LIBRARY=/tmp/android-deps/lib/libopenal.so \
             -DBUILD_TOOLS=OFF \
@@ -94,6 +113,10 @@ jobs:
             cp /tmp/android-deps/lib/libSDL2.so /tmp/android-proj/app/src/main/jniLibs/arm64-v8a/
             cp /tmp/android-deps/lib/libopenal.so /tmp/android-proj/app/src/main/jniLibs/arm64-v8a/
             SO_FILE=$(find build-android -name "lib${GAME}.so" | head -n 1)
+            if [ -z "$SO_FILE" ]; then
+              echo "File lib${GAME}.so tidak ditemukan!"
+              exit 1
+            fi
             cp "$SO_FILE" /tmp/android-proj/app/src/main/jniLibs/arm64-v8a/
 
             cat <<EOF > /tmp/android-proj/app/build.gradle
