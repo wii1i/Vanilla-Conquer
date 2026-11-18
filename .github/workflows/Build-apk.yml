@@ -28,6 +28,7 @@ jobs:
 
           git clone --depth 1 --branch release-2.30.11 https://github.com/libsdl-org/SDL.git /tmp/SDL
           cmake -S /tmp/SDL -B /tmp/SDL/build \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-24 \
@@ -40,6 +41,7 @@ jobs:
 
           git clone --depth 1 --branch 1.23.1 https://github.com/kcat/openal-soft.git /tmp/openal
           cmake -S /tmp/openal -B /tmp/openal/build \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-24 \
@@ -58,6 +60,7 @@ jobs:
           TOOLCHAIN="$NDK_DIR/build/cmake/android.toolchain.cmake"
 
           cmake -S . -B build-android \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-24 \
@@ -115,18 +118,15 @@ jobs:
           import sys
           game, app_name = sys.argv[1], sys.argv[2]
 
-          # 1. Atur nama aplikasi
           s_path = "/tmp/android-proj/app/src/main/res/values/strings.xml"
           with open(s_path, "r") as f: s = f.read()
           with open(s_path, "w") as f: f.write(s.replace("Game", app_name))
 
-          # 2. Paksa orientasi layar landscape
           m_path = "/tmp/android-proj/app/src/main/AndroidManifest.xml"
           with open(m_path, "r") as f: m = f.read()
           m = m.replace('<activity android:name="SDLActivity"', '<activity android:name="SDLActivity" android:screenOrientation="landscape"')
           with open(m_path, "w") as f: f.write(m)
 
-          # 3. Muat library openal + game dan arahkan folder kerja ke Android/data/<app_id>/files
           j_path = "/tmp/android-proj/app/src/main/java/org/libsdl/app/SDLActivity.java"
           with open(j_path, "r") as f: j = f.read()
           j = j.replace('"main"', f'"openal", "{game}"')
