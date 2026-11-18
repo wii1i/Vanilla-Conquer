@@ -59,9 +59,9 @@ jobs:
           NDK_DIR="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-$(ls -d /usr/local/lib/android/sdk/ndk/* | sort -V | tail -n 1)}}"
           TOOLCHAIN="$NDK_DIR/build/cmake/android.toolchain.cmake"
 
-          # [FIX 1] Nama target CMake yang benar: VanillaRA / VanillaTD (huruf besar).
-          # [FIX 2] Semua baca/tulis file pakai mode binary (rb/wb) karena
-          #         startup.cpp mengandung byte CP437 non-UTF-8 (mis. "Mémoire").
+          # Nama target CMake yang benar: VanillaRA / VanillaTD (huruf besar).
+          # Semua baca/tulis mode binary (rb/wb) karena startup.cpp
+          # mengandung byte CP437 non-UTF-8 (mis. "Mémoire").
           python3 - << 'PY'
           import sys
 
@@ -80,8 +80,7 @@ jobs:
                   f.write(data.replace(old, new))
               print("Patch OK:", path)
 
-          # Jaga agar entry point tetap bernama 'main' (bukan SDL_main),
-          # karena SDLActivity di step packaging akan dipatch memanggil 'main'.
+          # Jaga entry point tetap bernama 'main' (bukan SDL_main).
           for path in ["redalert/startup.cpp", "tiberiandawn/startup.cpp"]:
               with open(path, "rb") as f:
                   data = f.read()
@@ -114,7 +113,7 @@ jobs:
             -DBUILD_TESTS=OFF
           cmake --build build-android -j$(nproc)
 
-          # [FIX 3] Verifikasi gagal-cepat: .so harus ada dan mengekspor 'main'
+          # Verifikasi gagal-cepat: .so ada dan mengekspor 'main'
           NM="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
           for GAME in vanillara vanillatd; do
             SO_FILE=$(find build-android -name "lib${GAME}.so" | head -n 1)
@@ -170,6 +169,8 @@ jobs:
           }
           EOF
 
+            # [FIX] JANGAN edit SDLActivity.java (penyebab javac gagal).
+            # Buat subclass bersih VanillaActivity + arahkan manifest ke situ.
             python3 - "$GAME" "$APP_NAME" << 'PY'
           import sys
           game, app_name = sys.argv[1], sys.argv[2]
@@ -180,23 +181,44 @@ jobs:
 
           m_path = "/tmp/android-proj/app/src/main/AndroidManifest.xml"
           with open(m_path, "r") as f: m = f.read()
-          m = m.replace('<activity android:name="SDLActivity"', '<activity android:name="SDLActivity" android:screenOrientation="landscape"')
+          m = m.replace('<activity android:name="SDLActivity"',
+                        '<activity android:name="VanillaActivity" android:screenOrientation="landscape"')
           with open(m_path, "w") as f: f.write(m)
 
-          j_path = "/tmp/android-proj/app/src/main/java/org/libsdl/app/SDLActivity.java"
-          with open(j_path, "r") as f: j = f.read()
-          j = j.replace('"main"', f'"openal", "{game}"')
-          # [FIX 4] Engine mengekspor 'main', bukan 'SDL_main'
-          j = j.replace('return "SDL_main";', 'return "main";')
-          # [FIX 5] chdir ke folder data game + matikan emulasi touch<->mouse
-          #         agar input murni keyboard & mouse eksternal
-          chdir_hook = (
-              'super.onCreate(savedInstanceState);\n'
-              '        try { android.system.Os.setenv("SDL_TOUCH_MOUSE_EVENTS", "0", true); android.system.Os.setenv("SDL_MOUSE_TOUCH_EVENTS", "0", true); } catch (Exception e) {}\n'
-              '        java.io.File d = getExternalFilesDir(null); if (d != null) { d.mkdirs(); try { android.system.Os.chdir(d.getAbsolutePath()); } catch (Exception e) {} }'
-          )
-          j = j.replace('super.onCreate(savedInstanceState);', chdir_hook, 1)
-          with open(j_path, "w") as f: f.write(j)
+          j_path = "/tmp/android-proj/app/src/main/java/org/libsdl/app/VanillaActivity.java"
+          java = '''package org.libsdl.app;
+
+          import android.os.Bundle;
+
+          public class VanillaActivity extends SDLActivity {
+              @Override
+              protected String[] getLibraries() {
+                  return new String[] { "SDL2", "openal", "GAME" };
+              }
+
+              @Override
+              protected String getMainFunction() {
+                  return "main";
+              }
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  try {
+                      android.system.Os.setenv("SDL_TOUCH_MOUSE_EVENTS", "0", true);
+                      android.system.Os.setenv("SDL_MOUSE_TOUCH_EVENTS", "0", true);
+                  } catch (Exception e) {}
+                  java.io.File d = getExternalFilesDir(null);
+                  if (d != null) {
+                      d.mkdirs();
+                      try { android.system.Os.chdir(d.getAbsolutePath()); } catch (Exception e) {}
+                  }
+                  super.onCreate(savedInstanceState);
+              }
+          }
+          '''
+          java = java.replace("GAME", game)
+          with open(j_path, "w") as f: f.write(java)
+          print("VanillaActivity.java dibuat untuk", game)
           PY
 
             chmod +x /tmp/android-proj/gradlew
