@@ -1,0 +1,37 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Kode Sumber & Submodule
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Siapkan JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Siapkan Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Beri Izin Eksekusi Gradle
+        run: chmod +x gradlew
+
+      - name: Kompilasi APK Debug (ARM64)
+        run: ./gradlew assembleDebug
+
+      - name: Unggah Hasil APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: VanillaConquer-ARM64-APK
+          path: '**/build/outputs/apk/debug/*.apk'
