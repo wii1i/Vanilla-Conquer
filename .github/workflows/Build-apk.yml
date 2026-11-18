@@ -59,9 +59,9 @@ jobs:
           NDK_DIR="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-$(ls -d /usr/local/lib/android/sdk/ndk/* | sort -V | tail -n 1)}}"
           TOOLCHAIN="$NDK_DIR/build/cmake/android.toolchain.cmake"
 
-          # Nama target CMake yang benar: VanillaRA / VanillaTD (huruf besar).
-          # Semua baca/tulis mode binary (rb/wb) karena startup.cpp
-          # mengandung byte CP437 non-UTF-8 (mis. "Mémoire").
+          # [1] Ubah target executable -> SHARED library (nama target huruf besar).
+          # [2] Tambah wrapper native SDL_main (entry point + chdir + anti-touch).
+          #     Semua baca/tulis mode binary karena startup.cpp ber-byte CP437.
           python3 - << 'PY'
           import sys
 
@@ -80,17 +80,34 @@ jobs:
                   f.write(data.replace(old, new))
               print("Patch OK:", path)
 
-          # Jaga entry point tetap bernama 'main' (bukan SDL_main).
+          wrapper = b'''
+          #ifdef __ANDROID__
+          #include <SDL_system.h>
+          #include <unistd.h>
+          #include <stdlib.h>
+          #include <sys/stat.h>
+          extern "C" __attribute__((visibility("default"))) int SDL_main(int argc, char** argv)
+          {
+              setenv("SDL_TOUCH_MOUSE_EVENTS", "0", 1);
+              setenv("SDL_MOUSE_TOUCH_EVENTS", "0", 1);
+              const char* ext = SDL_AndroidGetExternalStoragePath();
+              if (ext) {
+                  mkdir(ext, 0777);
+                  chdir(ext);
+              }
+              return main(argc, argv);
+          }
+          #endif
+          '''
           for path in ["redalert/startup.cpp", "tiberiandawn/startup.cpp"]:
               with open(path, "rb") as f:
                   data = f.read()
-              old = b"int main(int argc"
-              new = b"#undef main\nint main(int argc"
-              if old not in data:
-                  sys.exit("Pola main() tidak ditemukan di %s!" % path)
+              if b"int SDL_main(" in data:
+                  print("Wrapper sudah ada:", path)
+                  continue
               with open(path, "wb") as f:
-                  f.write(data.replace(old, new, 1))
-              print("Patch OK:", path)
+                  f.write(data + b"\n" + wrapper)
+              print("Wrapper OK:", path)
           PY
 
           cmake -S . -B build-android \
@@ -113,7 +130,7 @@ jobs:
             -DBUILD_TESTS=OFF
           cmake --build build-android -j$(nproc)
 
-          # Verifikasi gagal-cepat: .so ada dan mengekspor 'main'
+          # Verifikasi: .so ada dan mengekspor SDL_main
           NM="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
           for GAME in vanillara vanillatd; do
             SO_FILE=$(find build-android -name "lib${GAME}.so" | head -n 1)
@@ -122,7 +139,7 @@ jobs:
               exit 1
             fi
             echo "== $SO_FILE =="
-            "$NM" -D --defined-only "$SO_FILE" | grep -w main || { echo "Simbol 'main' tidak diekspor oleh $SO_FILE!"; exit 1; }
+            "$NM" -D --defined-only "$SO_FILE" | grep -w SDL_main || { echo "Simbol SDL_main tidak diekspor!"; exit 1; }
           done
 
       - name: Kemas APK VanillaRA & VanillaTD
@@ -149,7 +166,10 @@ jobs:
               echo "File lib${GAME}.so tidak ditemukan!"
               exit 1
             fi
-            cp "$SO_FILE" /tmp/android-proj/app/src/main/jniLibs/arm64-v8a/
+            # [FIX] Beri nama libmain.so agar SDLActivity bawaan (getLibraries
+            #       default {"SDL2","main"}, getMainFunction "SDL_main") cocok
+            #       TANPA perlu mengedit Java sama sekali.
+            cp "$SO_FILE" /tmp/android-proj/app/src/main/jniLibs/arm64-v8a/libmain.so
 
             cat <<EOF > /tmp/android-proj/app/build.gradle
           apply plugin: 'com.android.application'
@@ -169,11 +189,10 @@ jobs:
           }
           EOF
 
-            # [FIX] JANGAN edit SDLActivity.java (penyebab javac gagal).
-            # Buat subclass bersih VanillaActivity + arahkan manifest ke situ.
-            python3 - "$GAME" "$APP_NAME" << 'PY'
+            # Hanya resource & manifest (bukan Java) -> aman untuk javac
+            python3 - "$APP_NAME" << 'PY'
           import sys
-          game, app_name = sys.argv[1], sys.argv[2]
+          app_name = sys.argv[1]
 
           s_path = "/tmp/android-proj/app/src/main/res/values/strings.xml"
           with open(s_path, "r") as f: s = f.read()
@@ -182,47 +201,23 @@ jobs:
           m_path = "/tmp/android-proj/app/src/main/AndroidManifest.xml"
           with open(m_path, "r") as f: m = f.read()
           m = m.replace('<activity android:name="SDLActivity"',
-                        '<activity android:name="VanillaActivity" android:screenOrientation="landscape"')
+                        '<activity android:name="SDLActivity" android:screenOrientation="landscape"')
           with open(m_path, "w") as f: f.write(m)
-
-          j_path = "/tmp/android-proj/app/src/main/java/org/libsdl/app/VanillaActivity.java"
-          java = '''package org.libsdl.app;
-
-          import android.os.Bundle;
-
-          public class VanillaActivity extends SDLActivity {
-              @Override
-              protected String[] getLibraries() {
-                  return new String[] { "SDL2", "openal", "GAME" };
-              }
-
-              @Override
-              protected String getMainFunction() {
-                  return "main";
-              }
-
-              @Override
-              protected void onCreate(Bundle savedInstanceState) {
-                  try {
-                      android.system.Os.setenv("SDL_TOUCH_MOUSE_EVENTS", "0", true);
-                      android.system.Os.setenv("SDL_MOUSE_TOUCH_EVENTS", "0", true);
-                  } catch (Exception e) {}
-                  java.io.File d = getExternalFilesDir(null);
-                  if (d != null) {
-                      d.mkdirs();
-                      try { android.system.Os.chdir(d.getAbsolutePath()); } catch (Exception e) {}
-                  }
-                  super.onCreate(savedInstanceState);
-              }
-          }
-          '''
-          java = java.replace("GAME", game)
-          with open(j_path, "w") as f: f.write(java)
-          print("VanillaActivity.java dibuat untuk", game)
+          print("Resource/manifest OK:", app_name)
           PY
 
             chmod +x /tmp/android-proj/gradlew
-            (cd /tmp/android-proj && ./gradlew assembleDebug)
+            # [FIX] Tangkap log gradle; jika gagal, tampilkan error javac Asli
+            #       di bagian BAWAH output supaya mudah dibaca/di-screenshot.
+            if (cd /tmp/android-proj && ./gradlew assembleDebug --console=plain) > /tmp/gradle.log 2>&1; then
+              tail -n 5 /tmp/gradle.log
+            else
+              echo "===== DETAIL ERROR JAVAC / GRADLE ====="
+              grep -n -B2 -A6 "error:" /tmp/gradle.log | tail -n 120
+              echo "===== AKHIR LOG GRADLE ====="
+              tail -n 60 /tmp/gradle.log
+              exit 1
+            fi
             cp /tmp/android-proj/app/build/outputs/apk/debug/app-debug.apk "/tmp/apk-out/${APP_NAME}-ARM64.apk"
           done
 
