@@ -3,7 +3,7 @@ name: Build Android APK
 on:
   workflow_dispatch:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, vanilla ]   # [FIX] branch repo ini "vanilla"
 
 jobs:
   build:
@@ -59,17 +59,35 @@ jobs:
           NDK_DIR="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-$(ls -d /usr/local/lib/android/sdk/ndk/* | sort -V | tail -n 1)}}"
           TOOLCHAIN="$NDK_DIR/build/cmake/android.toolchain.cmake"
 
+          # [FIX] Nama target sebenarnya VanillaRA / VanillaTD (huruf besar).
+          # OUTPUT_NAME tetap vanillara/vanillatd, sehingga hasil SHARED lib
+          # tetap bernama libvanillara.so / libvanillatd.so.
           python3 - << 'PY'
-          for path in ["redalert/CMakeLists.txt", "tiberiandawn/CMakeLists.txt"]:
-              try:
-                  with open(path, "r") as f:
-                      txt = f.read()
-                  txt = txt.replace("add_executable(vanillara", "add_library(vanillara SHARED")
-                  txt = txt.replace("add_executable(vanillatd", "add_library(vanillatd SHARED")
-                  with open(path, "w") as f:
-                      f.write(txt)
-              except FileNotFoundError:
-                  pass
+          import sys
+
+          targets = {
+              "redalert/CMakeLists.txt": "VanillaRA",
+              "tiberiandawn/CMakeLists.txt": "VanillaTD",
+          }
+          for path, target in targets.items():
+              with open(path) as f:
+                  txt = f.read()
+              old = "add_executable(%s" % target
+              new = "add_library(%s SHARED" % target
+              if old not in txt:
+                  sys.exit("Pola '%s' tidak ditemukan di %s!" % (old, path))
+              with open(path, "w") as f:
+                  f.write(txt.replace(old, new))
+              print("Patch OK:", path)
+
+          # [FIX] Jaga agar entry point tetap bernama 'main'
+          # (SDLActivity di bawah akan dipatch memanggil 'main').
+          for path in ["redalert/startup.cpp", "tiberiandawn/startup.cpp"]:
+              with open(path) as f:
+                  txt = f.read()
+              txt = txt.replace("int main(int argc", "#undef main\nint main(int argc", 1)
+              with open(path, "w") as f:
+                  f.write(txt)
           PY
 
           cmake -S . -B build-android \
@@ -85,13 +103,24 @@ jobs:
             -DCMAKE_PREFIX_PATH=/tmp/android-deps \
             -DSDL2_INCLUDE_DIR=/tmp/android-deps/include/SDL2 \
             -DSDL2_LIBRARY=/tmp/android-deps/lib/libSDL2.so \
-            -DSDL2_SDLMAIN_LIBRARY="-Wl,--whole-archive;/tmp/android-deps/lib/libSDL2main.a;-Wl,--no-whole-archive" \
+            -DSDL2_SDLMAIN_LIBRARY=/tmp/android-deps/lib/libSDL2main.a \
             -DOPENAL_INCLUDE_DIR=/tmp/android-deps/include/AL \
             -DOPENAL_LIBRARY=/tmp/android-deps/lib/libopenal.so \
             -DBUILD_TOOLS=OFF \
             -DBUILD_TESTS=OFF
           cmake --build build-android -j$(nproc)
-          find build-android -name "*.so"
+
+          # [FIX] Verifikasi di step ini: .so harus ada dan mengekspor 'main'
+          NM="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          for GAME in vanillara vanillatd; do
+            SO_FILE=$(find build-android -name "lib${GAME}.so" | head -n 1)
+            if [ -z "$SO_FILE" ]; then
+              echo "File lib${GAME}.so tidak ditemukan!"
+              exit 1
+            fi
+            echo "== $SO_FILE =="
+            "$NM" -D --defined-only "$SO_FILE" | grep -w main || { echo "Simbol 'main' tidak diekspor!"; exit 1; }
+          done
 
       - name: Kemas APK VanillaRA & VanillaTD
         run: |
@@ -153,7 +182,16 @@ jobs:
           j_path = "/tmp/android-proj/app/src/main/java/org/libsdl/app/SDLActivity.java"
           with open(j_path, "r") as f: j = f.read()
           j = j.replace('"main"', f'"openal", "{game}"')
-          chdir_hook = 'super.onCreate(savedInstanceState);\n        java.io.File d = getExternalFilesDir(null); if (d != null) { d.mkdirs(); try { android.system.Os.chdir(d.getAbsolutePath()); } catch (Exception e) {} }'
+          # [FIX] Engine mengekspor 'main', bukan 'SDL_main'
+          # (startup.cpp memakai SDL_MAIN_HANDLED / tidak include SDL_main.h)
+          j = j.replace('return "SDL_main";', 'return "main";')
+          # [FIX] chdir ke folder data + matikan emulasi touch<->mouse
+          # agar input murni keyboard & mouse eksternal
+          chdir_hook = (
+              'super.onCreate(savedInstanceState);\n'
+              '        try { android.system.Os.setenv("SDL_TOUCH_MOUSE_EVENTS", "0", true); android.system.Os.setenv("SDL_MOUSE_TOUCH_EVENTS", "0", true); } catch (Exception e) {}\n'
+              '        java.io.File d = getExternalFilesDir(null); if (d != null) { d.mkdirs(); try { android.system.Os.chdir(d.getAbsolutePath()); } catch (Exception e) {} }'
+          )
           j = j.replace('super.onCreate(savedInstanceState);', chdir_hook, 1)
           with open(j_path, "w") as f: f.write(j)
           PY
