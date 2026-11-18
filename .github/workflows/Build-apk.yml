@@ -21,14 +21,26 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Siapkan Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Beri Izin Eksekusi Gradle
-        run: chmod +x gradlew
+      - name: Cek Struktur Proyek & Izin Gradle
+        run: |
+          ls -la
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+          elif [ -f "./android/gradlew" ]; then
+            chmod +x ./android/gradlew
+          else
+            echo "File gradlew tidak ditemukan di root maupun folder android/"
+            find . -maxdepth 3 -name "gradlew" -o -name "CMakeLists.txt"
+            exit 1
+          fi
 
       - name: Kompilasi APK Debug (ARM64)
-        run: ./gradlew assembleDebug
+        run: |
+          if [ -f "./gradlew" ]; then
+            ./gradlew assembleDebug
+          else
+            cd android && ./gradlew assembleDebug
+          fi
 
       - name: Unggah Hasil APK
         uses: actions/upload-artifact@v4
